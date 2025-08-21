@@ -1,0 +1,26 @@
+/secrets/
+/credentials/
+/keys/
+*.age
+*.secret
+*.bak
+/*.drv
+/.direnv/
+/.nix-channels
+/var/log/
+/var/lib/
+/nix/
+/nix/store/
+
+# runtime / host-mutables
+/state/
+/incoming/
+/backups/
+/releases/
+
+# build fluff
+/result
+/result*
+/.direnv/
+/.nox/
+*.swp
