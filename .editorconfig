@@ -1,0 +1,14 @@
+root = true
+
+[*.sh]
+indent_style = space
+indent_size  = 2
+
+[*.bash]
+indent_style = space
+indent_size  = 2
+
+# Extensionless scripts in tools/
+[tools/*]
+indent_style = space
+indent_size  = 2

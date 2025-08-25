@@ -8,62 +8,89 @@
 {
   description = "Flake for NixOS headless server (with agenix, stable/unstable pkgs, crowdsec module)";
 
-  # --- Flake Inputs: Define all source channels and tools
   inputs = {
-    manifests.url = "path:/srv/nixserver/manifests";
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";                 # Stable channel for system/core packages
-    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";     # Unstable channel for opt-in bleeding edge pkgs (follows 25.05-unstable branch)
-/*  disko.url = "github:nix-community/disko";                         # Declarative partitioning (Disko module) — DISABLED */
-    agenix.url = "github:ryantm/agenix";                              # Encrypted secrets management (agenix)
-    flake-utils.url = "github:numtide/flake-utils";                   # Utility helpers for multi-system output
+    # Host-local manifests pinned as a non-flake path (copied to the store and locked)
+    manifests = { url = "path:/srv/nixserver/manifests"; flake = false; };
 
-    # --- CROWDSEC COMMUNITY MODULE ---
-    # Provides a maintained replacement for 'services.crowdsec' after its removal from NixOS 25.05+.
+    # Channels
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
+
+    # Tools / modules
+    agenix.url = "github:ryantm/agenix";
+    flake-utils.url = "github:numtide/flake-utils";
+
+    # CrowdSec community module (restores services.crowdsec on 25.05+)
     crowdsec-flake.url = "git+https://codeberg.org/kampka/nix-flake-crowdsec";
   };
 
-  # --- Outputs: Build the configuration set
-  outputs = { self, nixpkgs, nixpkgs-unstable, /*disko,*/ agenix, crowdsec-flake, ... }: {
+  outputs = { self, nixpkgs, nixpkgs-unstable, agenix, crowdsec-flake, manifests, ... }:
+  let
+    system = "x86_64-linux";
+
+    # Primary pkgs set (stable), with a small overlay pulling only 'crowdsec' from unstable.
+    pkgs = import nixpkgs {
+      inherit system;
+      overlays = [
+        (final: prev: {
+          crowdsec = nixpkgs-unstable.legacyPackages.${system}.crowdsec;
+        })
+      ];
+    };
+
+    # Convenience handle to the full unstable set (optional)
+    pkgsUnstable = nixpkgs-unstable.legacyPackages.${system};
+
+    # ---- Read manifest data from the store-locked path input ----
+    # Helper to read JSON if present
+    readJson = path:
+      if builtins.pathExists path
+      then builtins.fromJSON (builtins.readFile path)
+      else null;
+
+    filesystemsPath = builtins.toPath "${manifests}/filesystems.json";
+    secretsMapPath  = builtins.toPath "${manifests}/secrets-map.json";
+
+    fsList =
+      let v = readJson filesystemsPath;
+      in if v == null then [ ] else v;
+
+    # Expect shape: { version = 1; secrets = { <name> = { agePath=...; ... }; }; }
+    secretsMap =
+      let v = readJson secretsMapPath;
+      in if v == null then { version = 1; secrets = {}; } else v;
+
+  in {
     nixosConfigurations = {
       nixserver = nixpkgs.lib.nixosSystem {
-        system = "x86_64-linux";
-
-        # --- Special arguments for package/channel selection ---
+        # system = "x86_64-linux";   # ← remove this
         specialArgs = {
           pkgs = import nixpkgs {
             system = "x86_64-linux";
             overlays = [
-              # --- CROWDSEC PACKAGE FROM UNSTABLE ---
-              # Ensures any usage of pkgs.crowdsec (CLI, module) is always the latest from unstable.
               (final: prev: {
-                crowdsec = import nixpkgs-unstable { system = "x86_64-linux"; }.crowdsec;
+                crowdsec = (import nixpkgs-unstable { system = "x86_64-linux"; }).crowdsec;
               })
             ];
           };
           pkgsUnstable = import nixpkgs-unstable { system = "x86_64-linux"; };
           agenix = agenix;
+
+          # Pass both the store path and parsed data to modules
+          manifestsPath = manifests;        # store path to /manifests
+          inherit fsList secretsMap;        # parsed JSON data
         };
 
-        \1 ({ config, ... }: { nix.settings.experimental-features = [ "nix-command" "flakes" ]; }) # --- Enforces use of the given pkgs for all NixOS modules. Disables ignored overlays/config for reproducibility and compatibility with specialArgs.pkgs ---
-          ({ config, ... }: {
-            nixpkgs.pkgs = import nixpkgs {
-              system = "x86_64-linux";
-              overlays = [
-                (final: prev: {
-                  crowdsec = import nixpkgs-unstable { system = "x86_64-linux"; }.crowdsec;
-                })
-              ];
-            };
-            # --- NIXOS VERSION LOCK ---
-            system.stateVersion = "25.05"; # Lock system state version to 25.05 for stable, reproducible upgrades.
+        modules = [
+          { nix.settings.experimental-features = [ "nix-command" "flakes" ]; }
+          nixpkgs.nixosModules.readOnlyPkgs
+          ({ pkgs, ... }: {
+            # use the pkgs from specialArgs for all modules
+            nixpkgs.pkgs = pkgs;
+            system.stateVersion = "25.05";
           })
-
-          ./configuration.nix          # Main config imports (all modular .nix)
-/*        disko.nixosModules.disko     # Disko module (partition layout) — DISABLED */
-          agenix.nixosModules.default  # Age/agenix secrets module
-
-          # --- CROWDSEC NIXOS MODULE FROM COMMUNITY FLAKE ---
-          # Restores 'services.crowdsec' and all module options in a fully maintained way.
+          ./configuration.nix
+          agenix.nixosModules.default
           crowdsec-flake.nixosModules.crowdsec
         ];
       };

@@ -22,7 +22,7 @@
 
   # --- KERNEL MODULES ---
   # Add ZFS and block-level bcache/bcachefs support. (for the situation when bcachefs is dropped from the Kernel)
-  boot.extraModulePackages = with pkgs.linuxPackages_6_12; [
+  boot.extraModulePackages = with pkgs.linuxPackages_6_15; [
     # openzfs_2_3_3           # Stable ZFS module known to work with 6.12 kernel.
     # bcache                # Option: enable block-level SSD caching for HDDs.
     # openzfs_latest        # Option: try latest ZFS module for newer kernels.

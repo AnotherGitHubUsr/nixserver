@@ -22,13 +22,13 @@ let
       '';
     };
 
-  # Makes the building work from anywhere.
+  # Makes rebuilding from anywhere convenient.
   nixosApply = pkgs.writeShellApplication {
     name = "nixos-apply";
     runtimeInputs = with pkgs; [ nixos-rebuild rsync git coreutils systemd ];
     text = builtins.readFile ./tools/nixos-apply.sh;
   };
- 
+
   # ---------- BCACHEFS: VERIFY READS (POOR MAN'S SCRUB) ----------
   # Warn-only integrity pass: remount ro,nochanges; stream-read all files; remount rw.
   bcachefsVerifyReads = mk {
@@ -416,7 +416,7 @@ let
   # Works with a private identity (/etc/agenix/key.txt) OR with only a public recipient (/etc/agenix/public.age).
   ensureSecrets = mk {
     name = "ensure-secrets";
-    runtimeInputs = with pkgs; [ age openssl coreutils jq util-linux ];
+    runtimeInputs = with pkgs; [ age coreutils jq util-linux gawk ];
     text = ''
       KEYDIR="/etc/agenix"
       PRIV="$KEYDIR/key.txt"
@@ -429,8 +429,10 @@ let
       if [[ -s "$PUB" ]]; then
         RECIP="$(awk 'NF{print $1; exit}' "$PUB")"
       elif [[ -s "$PRIV" ]]; then
-        RECIP="$(age-keygen -y "$PRIV" | awk 'NR==1{print $1}')"
-      else
+        RECIP="$(age-keygen -y "$PRIV" | awk '/^public key:/ {print $3; exit} /^age1/ {print $1; exit}')"
+      fi
+
+      if [[ -z "$RECIP" ]]; then
         cat >&2 <<'EOM'
 ensure-secrets: No age identity found.
 - Provide /etc/agenix/key.txt (private) OR /etc/agenix/public.age (public).
@@ -441,13 +443,13 @@ EOM
         exit 2
       fi
 
-      names=($(jq -r '.secrets|keys[]' "$MAP"))
+      mapfile -t names < <(jq -r '.secrets|keys[]' "$MAP")
       [[ ''${#names[@]} -gt 0 ]] || { echo "ensure-secrets: empty map"; exit 0; }
 
       umask 077
       for name in "''${names[@]}"; do
-        file=$(jq -r --arg n "$name" '.secrets[$n].agePath' "$MAP")
-        mode=$(jq -r --arg n "$name" '.secrets[$n].mode // "0400"' "$MAP")
+        file="$(jq -r --arg n "$name" '.secrets[$n].agePath' "$MAP")"
+        mode="$(jq -r --arg n "$name" '.secrets[$n].mode // "0400"' "$MAP")"
         [[ -n "$file" && "$file" != "null" ]] || continue
         install -d -m 700 "$(dirname "$file")"
         if [[ ! -f "$file" ]]; then
@@ -473,8 +475,11 @@ EOM
       [[ -r "$PLAN" ]] || { echo "TOML plan not readable: $PLAN" >&2; exit 2; }
 
       python3 - "$PLAN" >"$TMP" <<'PY'
-import sys, json, os
-import tomllib  # Python 3.11+
+import sys, json
+try:
+    import tomllib  # Python 3.11+
+except ModuleNotFoundError:  # pragma: no cover
+    print("ERROR: Python >=3.11 required for tomllib", file=sys.stderr); sys.exit(1)
 
 plan_path = sys.argv[1]
 with open(plan_path, "rb") as f:
@@ -512,19 +517,24 @@ PY
   };
 
   # ---------- NIX STORE CLUMPED GC (wrapper → Python tool) ----------
-  nixStoreClumpGc = pkgs.writeShellApplication {
-    name = "nix-store-clumpgc";
-    runtimeInputs = with pkgs; [ python3 nix coreutils ];
-    text = ''
-      set -euo pipefail
-      exec /srv/nixserver/config/tools/nix-store-clumpgc.py \
-        --policy /srv/nixserver/manifests/gc-policy.json \
-        --map    /srv/nixserver/state/gc/index.json \
-        --log    /srv/nixserver/state/gc/deleted.ndjson \
-        --state-dir /srv/nixserver/state/gc \
-        "$@"
-    '';
-  };
+nixStoreClumpGc = pkgs.writeShellApplication {
+  name = "nix-store-clumpgc";
+  # Everything the script needs at runtime ends up on PATH:
+  runtimeInputs = with pkgs; [
+    python3 nix coreutils git jq
+  ];
+  # Prefer the repo file in the Nix store (reproducible) instead of /srv/…:
+  text = ''
+    set -euo pipefail
+    exec ${./tools/nix-store-clumpgc.py} \
+      --apply \
+      --state /srv/nixserver/state/gc/state.json \
+      --repo /srv/nixserver \
+      --sigma-hours 24 \
+      "$@"
+  '';
+};
+
 
 in
 rec {
@@ -543,8 +553,8 @@ rec {
     monitoringOnhoursCheck
     ensureSecrets
     diskConfigTool
-    nix-store-clumpgc
-    nixos-apply;
+    nixStoreClumpGc
+    nixosApply;
 
   paths = {
     "bcachefs-verify-reads"           = "${bcachefsVerifyReads}/bin/bcachefs-verify-reads";
@@ -561,7 +571,7 @@ rec {
     "monitoring-onhours-check"        = "${monitoringOnhoursCheck}/bin/monitoring-onhours-check";
     "ensure-secrets"                  = "${ensureSecrets}/bin/ensure-secrets";
     "disk-config-tool"                = "${diskConfigTool}/bin/disk-config-tool";
-    "nix-store-clumpgc"               = "${nixStoreClumpGc}/bin/nix-store-clumpgc"; 
-    "nixos-apply" 		      = "${nixosApply}/bin/nixos-apply";
+    "nix-store-clumpgc"               = "${nixStoreClumpGc}/bin/nix-store-clumpgc";
+    "nixos-apply"                     = "${nixosApply}/bin/nixos-apply";
   };
 }

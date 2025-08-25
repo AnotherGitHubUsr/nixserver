@@ -1,158 +1,102 @@
 # ==============================================================================
-# disk.nix
+# disk.nix — Declarative filesystems from a host-local manifest
 # ------------------------------------------------------------------------------
-# Purpose:
-#   Consolidated boot + filesystem module. Filesystems are imported from a
-#   machine-generated JSON file, and bcachefs writeback scheduling is handled
-#   via immutable helpers from scripts.nix.
+# Schema (array of objects):
+#   [
+#     { "mountPoint": "/", "device": "/dev/disk/by-uuid/…", "fsType": "ext4",
+#       "options": ["noatime"] },
+#     { "mountPoint": "/boot", "device": "/dev/disk/by-uuid/…", "fsType": "vfat",
+#       "options": ["umask=0077"] }
+#   ]
 #
-# Filesystems source:
-#   - Reads ./generated/filesystems.json (built by:
-#       ./disk-config-tool.sh --apply ./generated/disk-plan.current.toml
-#     or:
-#       ./gen-filesystems-from-current.sh       # generates TOML + JSON preview)
+# Notes
+#   • Keep /boot mounted during rebuilds so boot entries update.
+#   • No state is read from /etc; the JSON lives under /srv/nixserver/manifests
+#     but is read by the flake and passed in here as data.
+#   • If the JSON is missing a root entry ("/"), evaluation will fail with a
+#     helpful message explaining how to generate and apply a plan.
+#   • This module prefers UEFI (systemd-boot) and forcibly disables GRUB.
 #
-# IMPORTANT (user action):
-#   - Keep /boot mounted when rebuilding so boot entries update:
-#       sudo mount /boot
-#       sudo nixos-rebuild switch --flake .# --install-bootloader
-#
-# Timers:
-#   - Daily flush window at 11:00 (Persistent) → raises inflight, then drops.
-#   - Threshold watcher every 15 min → opens flush when cached/dirty ≥ 150 GiB.
-#   - Baseline at boot → inflight = 0.
+# Source of truth: manifests/filesystems.json (flake input “manifests”)
+# Passed to this module as:  fsList (via flake.nix specialArgs)
 # ==============================================================================
 
-{ config, pkgs, lib, ... }:
+{ config, lib, pkgs, fsList ? [ ], ... }:
 
 let
-  scripts = import ./scripts.nix { inherit pkgs lib; };
+  # Validate and sanitize options vectors
+  sanitizeOptions = opts:
+    let list =
+      if builtins.isList opts then opts else
+      if builtins.isString opts then [ opts ] else [ ];
+    in builtins.filter (x: builtins.isString x && x != "") list;
 
-  # --- Filesystems input (machine-generated JSON) -----------------------------
-  fsJsonPath = ./generated/filesystems.json;
+  # Build an attrset { "/mnt" = { device=..; fsType=..; options=[..]; } ; ... }
+  fsAttrset =
+    builtins.listToAttrs (map
+      (fs:
+        let
+          mp   = fs.mountPoint or (throw "filesystems.json: entry without mountPoint");
+          dev  = fs.device     or (throw "filesystems.json: ${mp}: missing device");
+          typ  = fs.fsType     or (throw "filesystems.json: ${mp}: missing fsType");
+          opts = sanitizeOptions (fs.options or [ ]);
+          val  = { device = dev; fsType = typ; }
+                 // (if (builtins.length opts) > 0 then { options = opts; } else { });
+        in { name = mp; value = val; }
+      )
+      fsList);
 
-  # If the JSON is missing, continue with an empty list (assert later that "/" exists).
-  fsList =
-    if builtins.pathExists fsJsonPath
-    then builtins.fromJSON (builtins.readFile fsJsonPath)
-    else [];
-
-  # Convert list → attrset keyed by mountPoint.
-  #
-  # NOTE:
-  # - Sanitize options: keep only non-empty strings.
-  # - Do NOT emit an empty `options` attribute: some consumers expect a non-empty list
-  #   and will error early if they see `[]` before later merges. We append "noatime"
-  #   for "/" further below so it becomes non-empty.
-  fsAttrset = builtins.listToAttrs (map (fs:
-    let
-      optsRaw = if fs ? options then fs.options else [];
-      opts    = builtins.filter (o: builtins.isString o && o != "") optsRaw;
-      device  = fs.device or "auto";
-      fsType  = fs.fsType or "auto";
-      base    = { inherit device fsType; };
-      withOpt = base // lib.optionalAttrs (opts != []) { options = opts; };
-    in {
-      name  = fs.mountPoint;
-      value = withOpt;
-    }
-  ) fsList);
-
+  haveRoot = fsAttrset ? "/";
 in
-lib.mkMerge [
-  {
-    # --- Sanity: require a root filesystem from the generated JSON ------------
-    assertions = [
-      {
-        assertion = fsAttrset ? "/";
-        message   = "generated/filesystems.json must define a root filesystem (mountPoint \"/\").\n\
-                     Generate it with:\n\
-                       ./disk-config-tool.sh --apply ./generated/disk-plan.current.toml\n\
-                     or:\n\
-                       ./gen-filesystems-from-current.sh";
-      }
-    ];
+{
+  # Strong, early error if root is missing; include precise guidance.
+  assertions = [
+    {
+      assertion = (builtins.length fsList) > 0;
+      message = ''
+        fsList from flake is empty.
+        If you edited /srv/nixserver/manifests/filesystems.json, refresh the lock:
+          nix flake update manifests
+        Then rebuild:
+          sudo nixos-rebuild switch --flake /srv/nixserver#nixserver
+      '';
+    }
+    {
+      assertion = haveRoot;
+      message = ''
+        No device specified for mount point "/".
+        The manifest (flake input) does not contain a root entry.
 
-    # --- Boot & ESP (consolidated) -------------------------------------------
-    boot.loader.systemd-boot.enable = true;
-    boot.loader.efi.canTouchEfiVariables = true;
+        If you edited /srv/nixserver/manifests/filesystems.json, refresh the lock:
+          nix flake update manifests
+        Then rebuild:
+          sudo nixos-rebuild switch --flake /srv/nixserver#nixserver
+      '';
+    }
+  ];
 
-    # --- Mount declarations from generated JSON ------------------------------
-    fileSystems = fsAttrset;
+  # Declarative filesystems from manifest
+  fileSystems =
+    fsAttrset
+    // (lib.optionalAttrs haveRoot {
+      # Deep-merge into "/" instead of replacing it, so device/fsType are kept.
+      "/" =
+        (fsAttrset."/")
+        // {
+          # ensure noatime is retained/added for root unless already present
+          options =
+            let existing = (fsAttrset."/".options or [ ]);
+            in existing ++ (if lib.elem "noatime" existing then [ ] else [ "noatime" ]);
 
-    # --- ESP safety helper ---------------------------------------------------
-    systemd.services.ensure-boot-esp = {
-      description = "Ensure ESP is mounted on /boot when present";
-      wantedBy = [ "multi-user.target" ];
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStart = scripts.paths."ensure-boot-esp";
-      };
-    };
+          # Mark root as required in stage-1
+          neededForBoot = true;
+        };
+    });
 
-    # --- Baseline writeback throttle at boot --------------------------------
-    systemd.services."bcachefs-writeback-baseline" = {
-      description = "bcachefs writeback: baseline inflight = 0";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "local-fs.target" ];
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStart = "${scripts.paths."bcachefs-writeback-set"} 0";
-      };
-    };
-
-    # --- Daily flush window at 11:00 ----------------------------------------
-    systemd.services."bcachefs-writeback-daily" = {
-      description = "bcachefs writeback: daily flush window";
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStart = scripts.paths."bcachefs-writeback-schedule";
-        Environment = [
-          "BCACHEFS_MOVE_BYTES_FLUSH=268435456"   # ~256 MiB inflight
-          "BCACHEFS_FLUSH_WINDOW_SECONDS=7200"    # 2 hours
-        ];
-      };
-    };
-    systemd.timers."bcachefs-writeback-daily" = {
-      wantedBy = [ "timers.target" ];
-      timerConfig = {
-        OnCalendar = "11:00";
-        Persistent = true;
-      };
-    };
-
-    # --- Threshold watcher every 15 minutes ---------------------------------
-    systemd.services."bcachefs-writeback-threshold" = {
-      description = "bcachefs writeback: threshold-triggered flush";
-      serviceConfig = {
-        Type = "oneshot";
-        ExecStart = scripts.paths."bcachefs-writeback-threshold";
-        Environment = [
-          "BCACHEFS_DIRTY_LIMIT=161061273600"     # 150 GiB
-          "BCACHEFS_MOVE_BYTES_FLUSH=268435456"
-          "BCACHEFS_FLUSH_WINDOW_SECONDS=7200"
-        ];
-      };
-    };
-    systemd.timers."bcachefs-writeback-threshold" = {
-      wantedBy = [ "timers.target" ];
-      timerConfig = {
-        OnBootSec = "10m";
-        OnUnitActiveSec = "15m";
-        AccuracySec = "1m";
-        Persistent = true;
-      };
-    };
-  }
-
-  # --- Post-process mounts (only if entries exist) ---------------------------
-  (lib.optionalAttrs (fsAttrset ? "/") {
-    # Ensure a non-empty options list for root by appending "noatime".
-    fileSystems."/".options = (fsAttrset."/".options or []) ++ [ "noatime" ];
-  })
-
-  (lib.optionalAttrs (fsAttrset ? "/boot") {
-    # Keep /boot options as provided (no enforced extras here).
-    fileSystems."/boot".options = (fsAttrset."/boot".options or []);
-  })
-]
+  # Prefer UEFI (systemd-boot); make sure GRUB is off to silence GRUB assertions.
+  boot.loader = {
+    grub.enable = lib.mkForce false;
+    systemd-boot.enable = lib.mkDefault true;
+    efi.canTouchEfiVariables = lib.mkDefault true;
+  };
+}

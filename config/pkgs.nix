@@ -8,7 +8,7 @@
 # Hardware graphics: AMD RX 6600 best practices incl. 32-bit for Wine/Proton.
 # --------------------------------------------------------
 
-{ config, pkgs, pkgsUnstable, ... }:
+{ config, pkgs, pkgsUnstable, lib ? pkgs.lib, ... }:
 
 {
   # --- NIX PATH CHANNELS (FOR SHELLS/LEGACY) ---
@@ -57,6 +57,9 @@
     coreutils    # sha256sum and friends
     findutils    # xargs/find (used in assorted scripts)
     gnused       # sed (explicit for script usage)
+    shellcheck   # used for checking scripts
+    shfmt      	 # unifying indentations
+    file	 # gives the file's utility
   ];
 
   # --- UNSTABLE PACKAGE USAGE EXAMPLE ---

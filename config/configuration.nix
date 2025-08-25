@@ -28,9 +28,8 @@ in
 
 
   # --- Adds Tools from scripts.nix on PATH
-  environment.systemPackages =
-    (config.environment.systemPackages or []) ++ [
-      scripts.nixosApply
+  environment.systemPackages = [
+    scripts.nixosApply
       # e.g. scripts.diskConfigTool scripts.ensureSecrets …
     ];
 

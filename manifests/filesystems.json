@@ -1,0 +1,1 @@
+[{"mountPoint":"/","device":"/dev/disk/by-label/weatherwax","fsType":"ext4","options":["rw","noatime"]},{"mountPoint":"/boot","device":"/dev/disk/by-uuid/CEA4-4DDA","fsType":"vfat","options":["rw","relatime"]},{"mountPoint":"/detritus","device":"/dev/disk/by-label/detritus","fsType":"xfs","options":["rw"]}]

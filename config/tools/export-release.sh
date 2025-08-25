@@ -38,7 +38,7 @@ rsync -a --delete "$MANIFESTS_DIR"/ "$rel_dir/manifests/"
 iso_now="$(date -Is)"
 kernel="$(uname -r)"
 
-cat > "$rel_dir/release.json" <<EOF
+cat >"$rel_dir/release.json" <<EOF
 {
   "id": "${rel_id}",
   "host": "${host}",
@@ -55,9 +55,9 @@ EOF
 # --indirect ensures a companion gcroot appears under /nix/var/nix/gcroots/auto
 # so moving the release directory later won't break the root.
 ln -sfn "$system_path" "$rel_dir/system"
-nix-store --add-root "$rel_dir/gcroot-system" --indirect "$system_path" >/dev/null
+nix-store --add-root "$rel_dir/gcroot-system" --indirect -r "$system_path" >/dev/null
 
 # Mark as latest
-echo "$rel_id" > "$STATE_DIR/LAST"
+echo "$rel_id" >"$STATE_DIR/LAST"
 
 echo "$rel_id"
