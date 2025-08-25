@@ -4,6 +4,7 @@
 *.age
 *.secret
 *.bak
+*.bak.*
 /*.drv
 /.direnv/
 /.nix-channels
@@ -24,3 +25,6 @@
 /.direnv/
 /.nox/
 *.swp
+
+# exact files specific to my build
+/manifest/filesystems.json
