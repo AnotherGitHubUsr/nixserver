@@ -3,21 +3,25 @@
 # nixos-apply.sh
 # ------------------------------------------------------------------------------
 # Purpose
-#   Deterministically build a NixOS system from a flake, activate the EXACT
-#   built closure, mirror the flake into /etc/nixos on success, export a
+#   Deterministically build a NixOS system from a flake, set the system profile
+#   to the EXACT built closure, ensure /boot is mounted so boot entries update,
+#   activate the closure, mirror the flake into /etc/nixos on success, export a
 #   release snapshot, and optionally auto-commit/push the repo.
 #
 # Behavior
 #   1) nixos-rebuild build --flake "<FLAKE>#<HOST>" [--impure] [--show-trace] …
-#   2) Run the built result's ./bin/switch-to-configuration switch
-#   3) Mirror flake → /etc/nixos via rsync (backup the old contents)
-#   4) Export a release (if export-release.sh is present and executable)
-#   5) Optionally run git-autocommit-push.sh
+#   2) Set system profile → nix-env -p /nix/var/nix/profiles/system --set <result>
+#   3) Ensure /boot is mounted (if present), then run:
+#      <result>/bin/switch-to-configuration switch
+#   4) Mirror flake → /etc/nixos (backup, then rsync)
+#   5) Export a release (if export-release.sh exists)
+#   6) Optionally run git-autocommit-push.sh
 #
 # Usage
 #   nixos-apply.sh [--flake PATH] [--host NAME] [--impure] [--show-trace]
 #                  [--no-mirror] [--no-export] [--no-git]
 #                  [--extra "RAW ARGS TO nixos-rebuild"]
+#                  [--allow-unmounted-boot]
 #
 # Environment
 #   EXPORT_RELEASE   Path to export-release.sh
@@ -27,14 +31,11 @@
 #   RSYNC_EXCLUDES   Space-separated extra rsync --exclude patterns
 #
 # Notes
-#   - We build first, then activate the built closure directly to avoid
-#     evaluating again. The activation script is part of the result’s closure
-#     and is invoked as: result/bin/switch-to-configuration switch
-#   - --show-trace is passed only to the build step for richer error traces.
-#   - --extra lets you pass additional flags to nixos-rebuild verbatim
-#     (e.g. '--keep-going -j4 -L').
+#   - Setting the system profile BEFORE activation makes the switch persistent.
+#   - Mounting /boot ensures loader entries are written for next reboot.
+#   - --allow-unmounted-boot lets you proceed in a “test” style if /boot
+#     is intentionally absent (no new loader entries will be written).
 # ==============================================================================
-
 set -euo pipefail
 
 # ---------- Defaults -----------------------------------------------------------
@@ -45,10 +46,11 @@ DO_MIRROR=1                   # 1=mirror /etc/nixos, 0=skip
 DO_EXPORT=1                   # 1=export release, 0=skip
 DO_GIT=1                      # 1=autocommit/push, 0=skip
 PASS_IMPURE=0
-SHOW_TRACE=0  # 1=--show-trace, 0=off
-EXTRA_ARGS=() # additional nixos-rebuild args (single string)
+SHOW_TRACE=0                  # 1=--show-trace, 0=off
+EXTRA_ARGS=()                 # additional nixos-rebuild args (single string)
+ALLOW_UNMOUNTED_BOOT=0        # 1=do not fail if /boot is unmounted
 
-# Timestamp helper (used for backup dir naming)
+# Timestamp for backups
 ts() { date +%Y-%m-%d_%H-%M-%S; }
 
 usage() {
@@ -56,59 +58,32 @@ usage() {
 Usage: nixos-apply.sh [--flake PATH] [--host NAME] [--impure] [--show-trace]
                       [--no-mirror] [--no-export] [--no-git]
                       [--extra "ARGS..."]
+                      [--allow-unmounted-boot]
 Env:
   EXPORT_RELEASE  (/srv/nixserver/config/tools/export-release.sh)
   AUTOCOMMIT_TOOL (/srv/nixserver/config/tools/git-autocommit-push.sh)
   RSYNC_EXCLUDES  (extra rsync --exclude patterns, space-separated)
 Notes:
-  --extra passes raw args to nixos-rebuild (besides the managed ones here).
-  --show-trace affects only the nixos-rebuild build step.
+  - The script sets the system profile to the built result before activation.
+  - It mounts /boot (if present) to write loader entries. Use
+    --allow-unmounted-boot to skip that requirement.
 USAGE
 }
 
 # ---------- Arg parsing --------------------------------------------------------
 while [[ $# -gt 0 ]]; do
   case "$1" in
-  --flake)
-    FLAKE="${2:-}"
-    shift 2
-    ;;
-  --host)
-    HOST="${2:-}"
-    shift 2
-    ;;
-  --impure)
-    PASS_IMPURE=1
-    shift
-    ;;
-  --show-trace)
-    SHOW_TRACE=1
-    shift
-    ;;
-  --no-mirror)
-    DO_MIRROR=0
-    shift
-    ;;
-  --no-export)
-    DO_EXPORT=0
-    shift
-    ;;
-  --no-git)
-    DO_GIT=0
-    shift
-    ;;
-  --extra)
-    EXTRA_ARGS+=("${2:-}")
-    shift 2
-    ;;
-  -h | --help)
-    usage
-    exit 0
-    ;;
-  *)
-    echo "unknown arg: $1" >&2
-    exit 64
-    ;;
+    --flake) FLAKE="${2:-}"; shift 2 ;;
+    --host) HOST="${2:-}"; shift 2 ;;
+    --impure) PASS_IMPURE=1; shift ;;
+    --show-trace) SHOW_TRACE=1; shift ;;
+    --no-mirror) DO_MIRROR=0; shift ;;
+    --no-export) DO_EXPORT=0; shift ;;
+    --no-git) DO_GIT=0; shift ;;
+    --extra) EXTRA_ARGS+=("${2:-}"); shift 2 ;;
+    --allow-unmounted-boot) ALLOW_UNMOUNTED_BOOT=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; exit 64 ;;
   esac
 done
 
@@ -127,15 +102,15 @@ TS="$(ts)"
 # ---------- Build (single evaluation) -----------------------------------------
 echo "==> Building $FLAKE#$HOST"
 BUILD_ARGS=(build --flake "$FLAKE#$HOST")
-((PASS_IMPURE == 1)) && BUILD_ARGS+=(--impure)            # allow impure eval when asked
-((SHOW_TRACE == 1)) && BUILD_ARGS+=(--show-trace)         # richer error traces
-((${#EXTRA_ARGS[@]})) && BUILD_ARGS+=("${EXTRA_ARGS[@]}") # raw passthrough
+((PASS_IMPURE == 1)) && BUILD_ARGS+=(--impure)
+((SHOW_TRACE == 1)) && BUILD_ARGS+=(--show-trace)
+((${#EXTRA_ARGS[@]})) && BUILD_ARGS+=("${EXTRA_ARGS[@]}")
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 pushd "$WORKDIR" >/dev/null
 
-# nixos-rebuild will place ./result symlink in $PWD
+# nixos-rebuild places ./result symlink in PWD
 if ! nixos-rebuild "${BUILD_ARGS[@]}"; then
   echo "Build failed." >&2
   exit 1
@@ -147,11 +122,32 @@ if [[ ! -x "$RESULT_PATH/bin/switch-to-configuration" ]]; then
   exit 1
 fi
 
+# ---------- Set system profile BEFORE activation ------------------------------
+# This makes the generation persistent and aligns with nixos-rebuild semantics.
+echo "==> Registering system profile → $RESULT_PATH"
+nix-env -p /nix/var/nix/profiles/system --set "$RESULT_PATH"
+
+# ---------- Ensure /boot is mounted (to write loader entries) -----------------
+# If /boot exists and is configured, mount it unless already mounted.
+if [[ -d /boot ]]; then
+  if ! findmnt -n /boot >/dev/null 2>&1; then
+    if (( ALLOW_UNMOUNTED_BOOT == 1 )); then
+      echo "==> /boot is not mounted; proceeding due to --allow-unmounted-boot"
+    else
+      echo "==> Mounting /boot to update bootloader entries"
+      if ! mount /boot; then
+        echo "ERROR: /boot could not be mounted. Use --allow-unmounted-boot to bypass." >&2
+        exit 2
+      fi
+    fi
+  fi
+fi
+
 # ---------- Activate the exact built closure ----------------------------------
 echo "==> Activating built closure: $RESULT_PATH"
 if ! "$RESULT_PATH/bin/switch-to-configuration" switch; then
   echo "Switch failed." >&2
-  exit 2
+  exit 3
 fi
 popd >/dev/null
 
@@ -163,23 +159,20 @@ if ((DO_MIRROR == 1)); then
   if [[ -d "$MIRROR_TARGET" ]]; then
     rsync -a --delete "$MIRROR_TARGET"/ "$BACKUP_DIR/"
   fi
-
-  # Base excludes; allow caller to append via RSYNC_EXCLUDES
   EXCLUDES=(
     "--exclude=.git" "--exclude=.direnv"
     "--exclude=result" "--exclude=result*"
     "--exclude=state"
   )
   if [[ -n "${RSYNC_EXCLUDES:-}" ]]; then
-    # shellcheck disable=SC2206  # word-split intended for user-provided patterns
+    # shellcheck disable=SC2206
     ADD=($RSYNC_EXCLUDES)
     EXCLUDES+=("${ADD[@]}")
   fi
-
   install -d -m 0755 "$MIRROR_TARGET"
   if ! rsync -a --delete "${EXCLUDES[@]}" "$FLAKE"/ "$MIRROR_TARGET/"; then
     echo "Mirror failed; backup in $BACKUP_DIR" >&2
-    exit 3
+    exit 4
   fi
 fi
 
@@ -191,7 +184,7 @@ if ((DO_EXPORT == 1)); then
     echo "==> Exporting release via $EXPORT"
     if ! REL_ID="$("$EXPORT")"; then
       echo "Export failed." >&2
-      exit 4
+      exit 5
     fi
     echo "Release: $REL_ID"
   else
@@ -207,7 +200,7 @@ if ((DO_GIT == 1 && DO_MIRROR == 1)); then
     REPO_DIR="${REPO_DIR:-/srv/nixserver}" \
       "$AUTOCOMMIT" ${REL_ID:+--id "$REL_ID"} || {
       echo "Git commit/push failed." >&2
-      exit 5
+      exit 6
     }
   else
     echo "==> Skipping git autocommit (no tool found)"
