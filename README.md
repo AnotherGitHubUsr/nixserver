@@ -1,6 +1,8 @@
 # nixserver
 > Flake-based NixOS headless server configuration with reproducible state, secrets, monitoring, and GitOps.
+
 > Version 2.0 might be called "Nearly Headless NickServer" 
+
 > ** To get a BETTER idea of this Repo, I'd advise reading the indices over the README. **
 
 ## Quick start
