@@ -19,6 +19,7 @@
 # ==============================================================================
 
 let
+  # Small helper for inline scripts (kept for future extensions).
   mk = { name, runtimeInputs ? [ ], text }:
     pkgs.writeShellApplication {
       inherit name runtimeInputs;
@@ -30,7 +31,7 @@ let
 
   # ---------------- Core host ops ----------------
   nixosApply = pkgs.writeShellApplication {
-    name = "nixos-apply";
+    name = "nixos-apply";                         # installed on PATH as nixos-apply
     runtimeInputs = with pkgs; [ nixos-rebuild rsync git coreutils systemd ];
     text = builtins.readFile ./tools/nixos-apply.sh;
   };
@@ -135,6 +136,24 @@ let
     text = builtins.readFile ./tools/monitoring/monitoring-onhours-check.sh;
   };
 
+  # ---------------- Diagnostics snapshot (NEW) ----------------
+  # Builds the collector from tools/monitoring/collect-diagnostics.sh
+  collectDiagnostics = pkgs.writeShellApplication {
+    name = "collect-diagnostics";            # exposed as 'collect-diagnostics' on PATH
+    runtimeInputs = with pkgs; [
+      # core
+      coreutils findutils util-linux gawk gnugrep gnused jq
+      # hw + system inventory
+      pciutils usbutils dmidecode smartmontools lm_sensors
+      # networking + firewall
+      iproute2 nftables iputils
+      # optional integrations; harmless if absent at runtime
+      crowdsec tailscale
+      # journal/dmesg live in the system; sudo is provided by the base system
+    ];
+    text = builtins.readFile ./tools/monitoring/collect-diagnostics.sh;
+  };
+
 in
 rec {
   inherit
@@ -153,34 +172,37 @@ rec {
     mon_monday_smart
     mon_periodic_8h
     mon_firewall_check
-    mon_onhours_check;
+    mon_onhours_check
+    collectDiagnostics;                       # ← include the new tool in the exported set
 
   paths = {
-    collectDiagnostics = scripts.collectDiagnostics;
+    # Diagnostics
+    "collect-diagnostics"                 = "${collectDiagnostics}/bin/collect-diagnostics";
+
     # Core ops
-    "nixos-apply"                        = "${nixosApply}/bin/nixos-apply";
-    "export-release"                     = "${exportRelease}/bin/export-release";
-    "git-autocommit-push"                = "${gitAutocommitPush}/bin/git-autocommit-push";
-    "health-report"                      = "${healthReport}/bin/health-report";
-    "lint-scripts"                       = "${lintScripts}/bin/lint-scripts";
+    "nixos-apply"                         = "${nixosApply}/bin/nixos-apply";
+    "export-release"                      = "${exportRelease}/bin/export-release";
+    "git-autocommit-push"                 = "${gitAutocommitPush}/bin/git-autocommit-push";
+    "health-report"                       = "${healthReport}/bin/health-report";
+    "lint-scripts"                        = "${lintScripts}/bin/lint-scripts";
 
     # Disks
-    "disk-config-tool"                   = "${diskConfigTool}/bin/disk-config-tool";
+    "disk-config-tool"                    = "${diskConfigTool}/bin/disk-config-tool";
 
     # Secrets
-    "secretsctl"                         = "${secretsCtl}/bin/secretsctl";
+    "secretsctl"                          = "${secretsCtl}/bin/secretsctl";
 
     # GC policy
-    "nix-store-clumpgc"                  = "${nixStoreClumpGc}/bin/nix-store-clumpgc";
+    "nix-store-clumpgc"                   = "${nixStoreClumpGc}/bin/nix-store-clumpgc";
 
     # Monitoring wrapper + tasks
-    "monctl"                             = "${monctl}/bin/monctl";
-    "bcachefs-verify-reads"              = "${mon_bcachefs_verify_reads}/bin/bcachefs-verify-reads";
-    "bcachefs-writeback-threshold"       = "${mon_bcachefs_writeback_threshold}/bin/bcachefs-writeback-threshold-watch";
-    "bcachefs-writeback-flush-window"    = "${mon_bcachefs_flush_window}/bin/bcachefs-writeback-flush-window";
-    "monitoring-monday-smart"            = "${mon_monday_smart}/bin/monitoring-monday-smart";
-    "monitoring-periodic-8h"             = "${mon_periodic_8h}/bin/monitoring-periodic-8h";
-    "monitoring-firewall-check"          = "${mon_firewall_check}/bin/monitoring-firewall-check";
-    "monitoring-onhours-check"           = "${mon_onhours_check}/bin/monitoring-onhours-check";
+    "monctl"                              = "${monctl}/bin/monctl";
+    "bcachefs-verify-reads"               = "${mon_bcachefs_verify_reads}/bin/bcachefs-verify-reads";
+    "bcachefs-writeback-threshold"        = "${mon_bcachefs_writeback_threshold}/bin/bcachefs-writeback-threshold-watch";
+    "bcachefs-writeback-flush-window"     = "${mon_bcachefs_flush_window}/bin/bcachefs-writeback-flush-window";
+    "monitoring-monday-smart"             = "${mon_monday_smart}/bin/monitoring-monday-smart";
+    "monitoring-periodic-8h"              = "${mon_periodic_8h}/bin/monitoring-periodic-8h";
+    "monitoring-firewall-check"           = "${mon_firewall_check}/bin/monitoring-firewall-check";
+    "monitoring-onhours-check"            = "${mon_onhours_check}/bin/monitoring-onhours-check";
   };
 }
