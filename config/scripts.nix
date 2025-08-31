@@ -156,6 +156,7 @@ rec {
     mon_onhours_check;
 
   paths = {
+    collectDiagnostics = scripts.collectDiagnostics;
     # Core ops
     "nixos-apply"                        = "${nixosApply}/bin/nixos-apply";
     "export-release"                     = "${exportRelease}/bin/export-release";

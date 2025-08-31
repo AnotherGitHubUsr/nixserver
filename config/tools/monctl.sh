@@ -10,7 +10,8 @@
 # Usage
 #   monctl.sh run                        # evaluate schedule, spawn due tasks, update counters
 #   monctl.sh status                     # dump counters and schedule with last-run metadata
-#   monctl.sh force  <task>              # run a task immediately (ignore schedule)
+#   monctl.sh force  <task>
+#   monctl.sh force diag-snapshot       # create a diagnostics snapshot now  <task>              # run a task immediately (ignore schedule)
 #   monctl.sh record <task>              # mark a task successful "now" without running it
 #
 # Installation (suggested)
@@ -294,7 +295,8 @@ do_status() {
 do_force() {
   local name="${1:-}"
   [[ -n "$name" ]] || {
-    echo "usage: monctl.sh force <task>" >&2
+    echo "usage: monctl.sh force  <task>
+#   monctl.sh force diag-snapshot       # create a diagnostics snapshot now <task>" >&2
     exit 2
   }
   ensure_schedule
@@ -343,3 +345,8 @@ record)
   exit 2
   ;;
 esac
+
+
+diag_snapshot() {
+  /run/current-system/sw/bin/collect-diagnostics.sh || collect-diagnostics.sh || true
+}

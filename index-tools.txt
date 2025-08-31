@@ -1,0 +1,87 @@
+Index of Helper Tools
+---------------------
+
+- config/tools/disk-config-tool.sh  
+  Maintain a TOML “disk plan” and convert to JSON for Nix modules.  
+  Called by: disk.nix.  
+  Runtime inputs: python3, jq, util-linux (lsblk, findmnt, blkid), coreutils, grep, sed, awk.  
+
+- config/tools/export-release.sh  
+  Snapshot active NixOS system into /srv/nixserver/releases with metadata and GC root.  
+  Called by: nixos-apply.sh.  
+  Runtime inputs: git, rsync, nix-store.  
+
+- config/tools/git-autocommit-push.sh  
+  Non-interactive “commit → pull --rebase --autostash → push” Git flow using deploy key.  
+  Called by: nixos-apply.sh.  
+  Runtime inputs: git, ssh.  
+
+- config/tools/health-report.sh  
+  Write minimal TOML status into /srv/nixserver/state/status.toml (release state, reboot flag).  
+  Called by: monitoring (manual or cron).  
+  Runtime inputs: bash, coreutils.  
+
+- config/tools/lint-scripts.sh  
+  Run ShellCheck and shfmt on repo scripts.  
+  Called by: user (manual).  
+  Runtime inputs: shellcheck, shfmt, grep, sed, bash.  
+
+- config/tools/monctl.sh  
+  Minute-counter driven scheduler for monitoring and bcachefs tasks.  
+  Called by: monitoring.nix systemd timer.  
+  Runtime inputs: jq, smartctl, date, awk, systemd-run.  
+
+- config/tools/nixos-apply.sh  
+  Deterministically build and activate system, mirror flake, export release, auto-commit.  
+  Called by: user (manual).  
+  Runtime inputs: nixos-rebuild, rsync, git.  
+
+- config/tools/nix-store-clumpgc.py  
+  Retain generations with density/clumping policy, safe GC.  
+  Called by: monitoring (manual).  
+  Runtime inputs: python3, nix-env, nix-store, git.  
+
+- config/tools/secretsctl  
+  Manage age/agenix secrets map, rotation, break-glass, SSH key generation.  
+  Called by: secrets.nix, user.  
+  Runtime inputs: age, age-keygen, jq, tar, flock, openssl, mkpasswd, htpasswd, git (optional).  
+
+- config/tools/monitoring/bcachefs-verify-reads.sh  
+  Run warn-only scrub of all files on bcachefs mounts.  
+  Called by: monctl.sh (scheduled).  
+  Runtime inputs: findmnt, dd, jq, journalctl, mount, umount.  
+
+- config/tools/monitoring/bcachefs-writeback-flush-window.sh  
+  Manual flush window helper for bcachefs.  
+  Called by: monctl.sh.  
+  Runtime inputs: bash, sysfs (/sys/fs/bcachefs).  
+
+- config/tools/monitoring/bcachefs-writeback-threshold-watch.sh  
+  Open flush window when dirty bytes exceed limit.  
+  Called by: monctl.sh.  
+  Runtime inputs: awk, bcfs sysfs, bcachefs CLI.  
+
+- config/tools/monitoring/monitoring-firewall-check.sh  
+  Dump nftables ruleset snapshot to log.  
+  Called by: monctl.sh (scheduled).  
+  Runtime inputs: nft.  
+
+- config/tools/monitoring/monitoring-monday-smart.sh  
+  Weekly SMART tests and quick ClamAV sweep.  
+  Called by: monctl.sh (scheduled).  
+  Runtime inputs: smartctl, hdparm, clamscan, find, grep.  
+
+- config/tools/monitoring/monitoring-onhours-check.sh  
+  Track device on-hours, trigger tasks at thresholds (verify, SMART long test).  
+  Called by: monctl.sh (scheduled).  
+  Runtime inputs: smartctl, jq, systemd-run.  
+
+- config/tools/monitoring/monitoring-periodic-8h.sh  
+  Every 8 hours: update ClamAV, reload CrowdSec, sample SMART, sensors, journal, nft.  
+  Called by: monctl.sh (scheduled).  
+  Runtime inputs: freshclam, systemctl, smartctl, sensors, journalctl, nft.  
+
+- config/tools/monitoring/collect-diagnostics.sh  
+  Collect a full diagnostic snapshot (previous boot journal, dmesg errors, CPU/PCI/USB/memory, cmdline, BIOS/DMI, SMART, network, nft, CrowdSec, Tailscale).  
+  Called by: monctl.sh (daily), user (`monctl.sh force diag-snapshot`).  
+  Runtime inputs: journalctl, sudo dmesg, lscpu, lspci, lsusb, free, dmidecode, lsblk, findmnt, smartctl, ip, ss, nft, cscli, tailscale.  

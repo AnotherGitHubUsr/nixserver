@@ -9,6 +9,6 @@ indent_style = space
 indent_size  = 2
 
 # Extensionless scripts in tools/
-[tools/*]
+[config/tools/**]
 indent_style = space
 indent_size  = 2
