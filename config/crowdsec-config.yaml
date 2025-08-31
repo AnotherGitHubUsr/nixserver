@@ -1,1 +1,16 @@
-{}
+common:
+  data_dir: /var/lib/crowdsec/data
+  pid_dir: /run/crowdsec
+
+db_config:
+  type: sqlite
+  db_path: /var/lib/crowdsec/crowdsec.db
+
+api:
+  server:
+    listen_uri: 127.0.0.1:8080
+
+acquisition:
+  - type: journald
+    journals: [ "sshd.service" ]
+

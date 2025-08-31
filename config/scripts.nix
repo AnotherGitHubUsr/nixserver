@@ -81,7 +81,7 @@ let
     runtimeInputs = with pkgs; [ python3 nix coreutils git jq ];
     text = ''
       set -euo pipefail
-      exec ${./config/tools/nix-store-clumpgc.py} --apply --state /srv/nixserver/state/gc/state.json "$@"
+      exec ${./tools/nix-store-clumpgc.py} --apply --state /srv/nixserver/state/gc/state.json "$@"
     '';
   };
 

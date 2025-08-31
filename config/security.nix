@@ -1,68 +1,128 @@
-# =========================
+# ==============================================================================
 # security.nix
-# =========================
-# --- SECURITY SERVICES, FIREWALL, HARDENING ---
-# Manages secret/service dependencies, fail2ban, AV, firewall, crowdsec.
-# For CrowdSec, community module does not support the 'localApi' NixOS option.
-# Instead, local API is enabled by providing a suitable config.yaml.
-# ------------------------------------------------
+# ------------------------------------------------------------------------------
+# Configures OpenSSH, firewall, Fail2ban, ClamAV, and CrowdSec (agent + LAPI).
+# Extend by: adding more acquisitions under /etc/crowdsec/acquis.d and extra
+#            cscli collections in the pre-start helper below.
+# Notable paths/policies (this repo):
+#  - CrowdSec data/db:  /var/lib/crowdsec/{hub,data,crowdsec.db}
+#  - CrowdSec runtime:  /run/crowdsec
+#  - Acquisitions dir:  /etc/crowdsec/acquis.d
+#  - Journald access:   service user joins systemd-journal group
+# ==============================================================================
 
-{ config, pkgs, ... }:
+{ config, pkgs, lib, ... }:
 
-{
-#better formatting needs happen for openssh bit
-services.openssh = {
-enable = true;
-settings = {
-PermitRootLogin = "no";
-PasswordAuthentication = false;
-KbdInteractiveAuthentication = false;
-};};
-
-
-  # --- ALL SECRET MANAGEMENT via ensure-secrets.service ---
-  # Any security or service module should depend on secrets being present at their /run/agenix/ paths.
-
-  # --- FAIL2BAN: SSH AND BRUTE-FORCE PROTECTION ---
-  services.fail2ban.enable = true;
-
-  # --- CLAMAV: ANTIVIRUS DAEMON AND UPDATER ---
-  services.clamav.daemon.enable = true;
-  services.clamav.updater.enable = true;
-
-  # --- FIREWALL: BASIC IPV4/6 FILTERING ---
-  networking.firewall.enable = true;
-
-  # Global allowances (host services)
-  networking.firewall.allowedTCPPorts = [ 22 80 443 ]; # SSH/HTTP/HTTPS
-  networking.firewall.allowedUDPPorts = [ 53 ];        # DNS
-
-  # --- ISCSI/NAS LINK POLICY (INTERFACE-SPECIFIC) ---
-  # Only allow iSCSI (TCP/3260) on the dedicated /30 VLAN interface, from the /30 subnet.
-  networking.firewall.interfaces.naslink.allowedTCPPorts = [ 3260 ];
-
-  # nftables rules to strictly limit naslink: permit 3260 from /30, then drop everything else on that interface.
-  networking.firewall.extraInputRules = ''
-    iifname "naslink" tcp dport 3260 ip saddr 10.250.250.248/30 accept
-    iifname "naslink" drop
-  '';
-
-  # --- SUDO: PASSWORDLESS SUDO FOR NIXUSER (commented) ---
-  security.sudo = {
-    enable = true;
-    wheelNeedsPassword = false;
+let
+  # Ensure hub content (parsers/scenarios) exists every start/restart.
+  crowdsecPrepare = pkgs.writeShellApplication {
+    name = "crowdsec-prepare";
+    runtimeInputs = [ pkgs.crowdsec pkgs.jq ];
+    text = ''
+      set -euo pipefail
+      ${pkgs.crowdsec}/bin/cscli hub update
+      if ! ${pkgs.crowdsec}/bin/cscli collections list -o json | jq -e '.collections[]?.name=="crowdsecurity/linux"' >/dev/null; then
+        ${pkgs.crowdsec}/bin/cscli collections install crowdsecurity/linux
+      fi
+      if ! ${pkgs.crowdsec}/bin/cscli collections list -o json | jq -e '.collections[]?.name=="crowdsecurity/sshd"' >/dev/null; then
+        ${pkgs.crowdsec}/bin/cscli collections install crowdsecurity/sshd
+      fi
+    '';
   };
 
-  # --- CROWDSEC: BEHAVIORAL DETECTION & LOCAL API ---
+  # Minimal journald acquisition for sshd; written via environment.etc
+  sshAcquis = ''
+    # Read sshd messages from systemd-journal
+    source: journalctl
+    journalctl_filter:
+      - "_SYSTEMD_UNIT=sshd.service"
+    labels:
+      type: syslog
+  '';
+in
+{
+  # --- OpenSSH (hardened defaults) ---
+  services.openssh = {
+    enable = true;
+    settings = {
+      PermitRootLogin = "no";
+      PasswordAuthentication = false;
+      KbdInteractiveAuthentication = false;
+    };
+  };
+
+  # --- Fail2ban / ClamAV ---
+  services.fail2ban.enable = true;
+  services.clamav = {
+    daemon.enable = true;
+    updater.enable = true;
+  };
+
+  # --- Firewall ---
+  networking.firewall = {
+    enable = true;
+    allowedTCPPorts = [ 22 80 443 ];
+    allowedUDPPorts = [ 53 ];
+    interfaces.naslink.allowedTCPPorts = [ 3260 ];
+    extraInputRules = ''
+      iifname "naslink" tcp dport 3260 ip saddr 10.250.250.248/30 accept
+      iifname "naslink" drop
+    '';
+  };
+
+  # --- CrowdSec agent (no bouncer here) ---
   services.crowdsec = {
     enable = true;
-    # No 'localApi' option here. Local API is enabled by providing a correct config.yaml.
+
+    # v1.6+ config expressed declaratively. The module will render /etc/crowdsec/config.yaml.
+    settings = {
+      common = {
+        pid_dir = "/run/crowdsec";
+        log_media = "stdout";
+        log_level = "info";
+      };
+      config_paths = {
+        config_dir = "/etc/crowdsec";
+        data_dir   = "/var/lib/crowdsec";
+        hub_dir    = "/var/lib/crowdsec/hub";
+        index_path = "/var/lib/crowdsec/hub/.index.json";
+      };
+      db_config = {
+        type    = "sqlite";
+        db_path = "/var/lib/crowdsec/crowdsec.db";
+        use_wal = true;
+      };
+      api.server = {
+        enable = true;
+        listen_uri = "127.0.0.1:8080";
+        log_level  = "info";
+      };
+      crowdsec_service.acquisition_dir = "/etc/crowdsec/acquis.d";
+
+      # Keep GeoIP enrichers off unless mmdb is provided later under /var/lib/crowdsec/data.
+      plugin_config.enrich.geoip = { enabled = false; };
+    };
   };
 
-  # --- CROWDSEC CONFIGURATION MANAGEMENT ---
-  environment.etc."crowdsec/config.yaml".source = ./crowdsec-config.yaml;
+  # Pre-start to ensure hub content is installed; idempotent.
+  systemd.services.crowdsec.serviceConfig.ExecStartPre = [
+    "${crowdsecPrepare}/bin/crowdsec-prepare"
+  ];
 
-  # --- SECRETS DEPENDENCY NOTE ---
-  # If you have security services that require secrets, ensure their systemd units use:
-  # after = [ "ensure-secrets.service" ];
+  # Allow the service to read the journal via the group.
+  systemd.services.crowdsec.serviceConfig.SupplementaryGroups = [ "systemd-journal" ];
+
+  # Acquisition file: journald → sshd unit filter.
+  environment.etc."crowdsec/acquis.d/ssh.yaml" = {
+    text = sshAcquis;
+    mode = "0644";
+  };
+
+  # Runtime/data dirs and ownership for the service user.
+  systemd.tmpfiles.rules = [
+    "d /run/crowdsec          0750 crowdsec crowdsec - -"
+    "d /var/lib/crowdsec      0750 crowdsec crowdsec - -"
+    "d /var/lib/crowdsec/data 0750 crowdsec crowdsec - -"
+    "d /var/lib/crowdsec/hub  0750 crowdsec crowdsec - -"
+  ];
 }
