@@ -1,31 +1,26 @@
 #!/usr/bin/env python3
+# ==============================================================================
 # nix-store-clumpgc.py
-# Automatic, non-interactive NixOS system generation retention + clumping GC.
-# - Keeps all generations for 3d.
-# - 3–10d: daily keep, and for "productive stretches" (mean inter-arrival <= 12h across >=36h span),
-#          keep {first, +24h, last}.
-# - >10d: greedy "integral" clumping using a kernel-smoothed activity score; enforce 5–10d windows.
-# - >3m: one per month (last generation of month).
-# - Safety: keep current booted, previous booted, and any explicitly pinned in state.
+# ------------------------------------------------------------------------------
+# Purpose
+#   Policy-driven retention for NixOS system generations with safe, targeted GC.
+#   Keeps dense history recent, clumps older spans by activity, and preserves
+#   safety anchors (current/previous booted, pinned).
 #
-# Activity score per generation g_i at time t_i:
-#   score_i = 0.1 * rebuild_event(=1) + 0.5 * norm(git_lines_delta) + 0.4 * norm(store_path_delta)
-# (closure bytes intentionally excluded)
+# Usage
+#   sudo nix-store-clumpgc.py --dry-run            # plan only (default)
+#   sudo nix-store-clumpgc.py --apply              # delete planned generations
+#   sudo nix-store-clumpgc.py --state /path.json   # override state path
 #
-# State file (JSON): tracks known generations, keep/delete decisions, and pinned flags.
-# Default state path: /var/lib/nix-retain/state.json
+# Data Sources
+#   - Generations: `nix-env -p /nix/var/nix/profiles/system --list-generations`
+#   - Deletions:   `nix-store --delete` and `nix-collect-garbage`
 #
-# Usage:
-#   sudo ./nix-store-clumpgc.py --apply        # perform deletions
-#   sudo ./nix-store-clumpgc.py --dry-run      # plan only (default)
-#   sudo ./nix-store-clumpgc.py --state /path  # override state file path
-#
-# Requires: nix, nix-env, nix-store, git, coreutils, python3.
-# Runs on host; does not need network; non-interactive.
-#
-# NOTE: This script avoids deleting current/previous booted generations.
-#       Deletion is done via `nix-env -p /nix/var/nix/profiles/system --delete-generations`.
-#
+# Notes
+#   - Runs offline. No network required. Works with Nix 2.x/NixOS 25.05.
+#   - Timestamps handled in UTC to avoid DST skew.
+# ==============================================================================
+
 import argparse, subprocess, sys, os, re, json, math, shutil
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict

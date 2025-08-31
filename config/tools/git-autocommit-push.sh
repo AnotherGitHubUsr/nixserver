@@ -1,38 +1,37 @@
 #!/usr/bin/env bash
+# ==============================================================================
 # git-autocommit-push.sh
-# -----------------------------------------------------------------------------
-# Commit and push changes in a Git repo using an SSH deploy key (non-interactive).
-#
-# What it does
-# - Uses an SSH deploy key (e.g., decrypted by agenix) via GIT_SSH_COMMAND.
-# - Optionally converts an HTTPS GitHub remote to SSH so the key is actually used.
-# - Commits local changes first, THEN pulls with --rebase (prevents the
-#   “cannot pull with rebase: You have unstaged changes” error).
-# - Creates the branch if missing; sets upstream on first push.
-# - Optionally tags the commit when a release id is provided via --id.
-#
-# Requirements: git, ssh; readable deploy key file.
+# ------------------------------------------------------------------------------
+# Purpose:
+#   Non-interactive "commit → pull --rebase --autostash → push" flow
+#   using an SSH deploy key via GIT_SSH_COMMAND. Auto-creates branch and upstream
+#   on first push. Optionally tags a release when --id is supplied.
 #
 # Usage:
-#   git-autocommit-push.sh [--id RELEASE_ID]
+#   git-autocommit-push.sh --repo /path --branch main --key /path/key \
+#                          --name "CI Bot" --email "bot@example" \
+#                          --message "Update" [--id REL-2025.08.30]
 #
-# Environment (defaults):
-#   REPO_DIR=/srv/nixserver
-#   DEPLOY_KEY_PATH=/run/agenix/github-deploy
-#   GIT_REMOTE=origin
-#   GIT_BRANCH=main
-#   GIT_AUTHOR_NAME=nixserver-gitops
-#   GIT_AUTHOR_EMAIL=nixserver-gitops@local
-#   KNOWN_HOSTS=""                         # optional path to known_hosts
-#   SSH_EXTRA_OPTS=""                      # extra ssh options
-#   AUTO_FIX_REMOTE=1                      # convert https→ssh for GitHub (1/0)
-#   AUTO_SET_UPSTREAM=1                    # set upstream on first push (1/0)
-#   CREATE_TAG_FROM_ID=1                   # create tag release-<id> (1/0)
-#   GIT_REMOTE_URL=""                      # if remote missing, add with this URL
+# Inputs:
+#   --repo, --branch, --remote, --key, --name, --email, --message, --id
+#   Environment: GIT_SSH_COMMAND (overrides), AUTO_SET_UPSTREAM=1, GIT_REMOTE=origin
 #
-# Note: On NixOS as root, avoid “dubious ownership” by marking repo safe; this
-# script sets a repo-local safe.directory to REPO_DIR.
-# -----------------------------------------------------------------------------
+# Behavior:
+#   - Uses `git -C <path>` (official) to operate in the target repo.
+#   - `git pull --rebase --autostash` is used to integrate remote changes safely.
+#   - Converts HTTPS GitHub origin to SSH if needed, so the key is used.
+#   - Tags are created locally and pushed if --id is set (annotated tag).
+#
+# Notes:
+#   - Prefer a repo-local `core.sshCommand` for persistent config; GIT_SSH_COMMAND
+#     takes precedence for one-off runs.
+#   - For OpenSSH, consider `-o IdentitiesOnly=yes -F /dev/null` to avoid agent keys.
+#   - Host key verification: keep strict checking. Pre-provision known_hosts.
+#
+# Exit codes:
+#   0 success; 2 usage/config error; >0 underlying git/ssh error.
+# ==============================================================================
+
 set -Eeuo pipefail
 
 # --- config -------------------------------------------------------------------
@@ -53,14 +52,26 @@ GIT_REMOTE_URL="${GIT_REMOTE_URL:-}"
 REL_ID=""
 while (($#)); do
   case "$1" in
-    --id) REL_ID="${2:-}"; shift 2 ;;
-    -h|--help) sed -n '1,120p' "$0"; exit 0 ;;
-    *) echo "[gitops] unknown arg: $1" >&2; exit 64 ;;
+  --id)
+    REL_ID="${2:-}"
+    shift 2
+    ;;
+  -h | --help)
+    sed -n '1,120p' "$0"
+    exit 0
+    ;;
+  *)
+    echo "[gitops] unknown arg: $1" >&2
+    exit 64
+    ;;
   esac
 done
 
 # --- helpers ------------------------------------------------------------------
-die() { echo "[gitops] ERROR: $*" >&2; exit 2; }
+die() {
+  echo "[gitops] ERROR: $*" >&2
+  exit 2
+}
 log() { echo "[gitops] $*"; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
 
@@ -97,7 +108,7 @@ trap 'popd >/dev/null' EXIT
 
 # Avoid “dubious ownership”
 git config --local --add safe.directory "$REPO_DIR" >/dev/null 2>&1 || true
-git config user.name  "$GIT_AUTHOR_NAME"
+git config user.name "$GIT_AUTHOR_NAME"
 git config user.email "$GIT_AUTHOR_EMAIL"
 git config push.default simple
 

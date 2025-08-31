@@ -1,9 +1,35 @@
-# =========================
-# flake.nix
-# =========================
-# --- FLAKE ENTRYPOINT, CHANNEL PINS, MODULE LIST ---
-# Disko has been commented out as requested; keep for future use.
-# --------------------------------------------------
+# ==============================================================================
+# flake.nix — Entrypoint, channel pins, module graph
+# ------------------------------------------------------------------------------
+# Purpose:
+#   Compose the system from nixpkgs 25.05 (stable), selectively pull packages from
+#   nixpkgs-unstable, and pass pinned manifests to modules via specialArgs.
+#
+# Policy:
+#   - Modules must use `pkgs` from specialArgs (readOnlyPkgs enforced).
+#   - No eval-time reads from /etc; host data comes from pinned `manifests`.
+#
+# Usage:
+#   # Build, activate, mirror, export, and autocommit via repo tool:
+#   nixos-apply --host nixserver [--show-trace] [--no-mirror] [--no-export] [--no-git]
+#   # optional: override flake path
+#   nixos-apply --flake /srv/nixserver/config --host nixserver
+#
+# Flake/lock management:
+#   # Update every input to latest allowed by URLs in this flake:
+#   nix flake update
+#   # Update a single input:
+#   nix flake lock --update-input nixpkgs
+#   nix flake lock --update-input nixpkgs-unstable
+#   # Pin an input to a specific revision or tag:
+#   nix flake lock --override-input nixpkgs github:NixOS/nixpkgs/<rev-or-tag>
+#   # Inspect current lock state:
+#   nix flake metadata
+#
+# Compatibility:
+#   NixOS 25.05, Linux 6.15+. ZFS ≥ 2.3.3 via `boot.zfs.package` (stable-first, fallback to unstable).
+# ==============================================================================
+
 
 {
   description = "Flake for NixOS headless server (with agenix, stable/unstable pkgs, crowdsec module)";

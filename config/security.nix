@@ -51,7 +51,7 @@ KbdInteractiveAuthentication = false;
   security.sudo = {
     enable = true;
     wheelNeedsPassword = false;
-  }; 
+  };
 
   # --- CROWDSEC: BEHAVIORAL DETECTION & LOCAL API ---
   services.crowdsec = {

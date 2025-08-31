@@ -1,5 +1,0 @@
-secrets/* filter=crypt diff=crypt
-credentials/* filter=crypt diff=crypt
-keys/* filter=crypt diff=crypt
-*.age filter=crypt diff=crypt
-*.secret filter=crypt diff=crypt

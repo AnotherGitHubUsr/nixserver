@@ -1,6 +1,23 @@
 #!/usr/bin/env bash
+# ==============================================================================
+# health-report.sh
+# ------------------------------------------------------------------------------
+# Purpose:
+#   Emit a minimal TOML status file under /srv/nixserver/state/status.toml with:
+#     - active and previous release symlink targets
+#     - booted generation (parsed from /run/current-system)
+#     - reboot_required flag (presence of /run/nixos/reboot-required)
+#     - mismatched releases (present in releases dir but missing gcroot)
+#
+# Usage:
+#   health-report.sh        # writes atomically to state/status.toml
+#
+# Notes:
+#   - Uses only read-only system metadata and writes atomically to avoid partial files.
+#   - TOML is human-readable; downstream tooling can parse it as needed.
+# ==============================================================================
 set -euo pipefail
-# Write human-readable TOML status under /srv/nixserver/state/status.toml
+
 BASE="/srv/nixserver"
 REL="$BASE/releases"
 STATE="$BASE/state/status.toml"
@@ -38,5 +55,6 @@ reboot=false
   done
   echo "]"
   echo "next_gc_window = \"\""
-} >"$STATE"
+} >"${STATE}.tmp"
+mv -f "${STATE}.tmp" "$STATE"
 echo "wrote $STATE"

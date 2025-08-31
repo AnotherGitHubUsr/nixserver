@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
-# Lint shell scripts with syntax/style/static checks.
-# Usage:
-#   tools/lint-scripts.sh [OPTIONS] [PATH...]
-# Options:
-#   -q, --quiet   Only print files with issues (fail/warn), suppress OK noise
-#   -h, --help    Show help
+# ==============================================================================
+# lint-scripts.sh
+# ------------------------------------------------------------------------------
+# Purpose:
+#   Run shell linters/formatters over the repo or given paths using:
+#     - ShellCheck for static analysis
+#     - shfmt for formatting checks (no in-place changes by default)
 #
-# If no PATH is given, defaults to /srv/nixserver/config/tools/*
-# Notes:
-#   • All checks are verbose by default EXCEPT shfmt. If formatting is needed,
-#     a single summary is printed at the end listing files (via `shfmt -l`)
-#     and how to fix (`shfmt -d` or `shfmt -w`).
-
+# Usage:
+#   lint-scripts.sh [OPTIONS] [PATH ...]
+# Options:
+#   -q, --quiet    Only print files with issues; suppress OK output
+#   -h, --help     Show help
+#
+# Behavior:
+#   - If no PATH is given, defaults to /srv/nixserver/config/tools/*
+#   - shfmt is reported via `shfmt -l`; suggest `-d` or `-w` for diffs/fixes
+#   - Exits 1 on any ShellCheck failure; warnings are summarized separately
+# ==============================================================================
 set -Eeuo pipefail
 
 QUIET=0
